@@ -9,7 +9,7 @@ USERNAME = change-me
 
 CXX = g++
 LD = g++
-CXXFLAGS = -std=c++17 -g
+CXXFLAGS = -std=c++17 -g -Wall -Wextra -Wpedantic -Werror
 LDFLAGS = 
 
 #
