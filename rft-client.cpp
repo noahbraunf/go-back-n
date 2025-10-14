@@ -1,13 +1,17 @@
 //
 // Created by Phillip Romig on 7/16/24.
 //
+#include <algorithm>
 #include <array>
 #include <fstream>
+#include <ios>
 #include <iostream>
+#include <iterator>
 #include <sys/socket.h>
 #include <system_error>
 #include <unistd.h>
 
+#include "datagram.h"
 #include "logging.h"
 #include "timerC.h"
 #include "unreliableTransport.h"
@@ -72,32 +76,101 @@ int main(int argc, char *argv[]) {
   // *********************************
   // * Open the input file
   // *********************************
+  std::ifstream file(inputFilename, std::ios::binary);
+  if (!file.is_open()) {
+    FATAL << "input file failed to open: " << inputFilename << ENDL;
+    return -1;
+  }
 
   try {
 
     // ***************************************************************
     // * Initialize your timer, window and the unreliableTransport etc.
     // **************************************************************
+    timerC timer;
+    timer.setDuration(60);
+    unreliableTransportC client{hostname, portNum};
+    std::array<datagramS, WINDOW_SIZE> window;
+    uint16_t nextseqnum = 1;
+    uint16_t base = 1;
 
     // ***************************************************************
     // * Send the file one datagram at a time until they have all been
     // * acknowledged
     // **************************************************************
-    bool allSent(false);
-    bool allAcked(false);
+    bool allSent{false};
+    bool allAcked{false};
     while ((!allSent) && (!allAcked)) {
-
       // Is there space in the window? If so, read some data from the file and
       // send it.
+      if (nextseqnum < base + WINDOW_SIZE) {
 
+        std::array<char, MAX_PAYLOAD_LENGTH> buffer;
+        file.read(buffer.data(), buffer.size());
+        std::streamsize bytes_read = file.gcount();
+
+        if (bytes_read > 0) {
+          datagramS packet{
+              nextseqnum, 0, 0, static_cast<uint8_t>(bytes_read), {}};
+          std::copy(buffer.cbegin(), buffer.cbegin() + bytes_read, packet.data);
+          packet.checksum = computeChecksum(packet);
+          client.udt_send(packet);
+
+          window[nextseqnum % WINDOW_SIZE] = packet;
+
+          if (base == nextseqnum) {
+            timer.start();
+          }
+          nextseqnum++;
+        } else {
+          allSent = true;
+        }
+      }
       // Call udt_recieve() to see if there is an acknowledgment.  If there is,
       // process it.
+      datagramS ackpacket;
+      const auto bytes_received = client.udt_receive(ackpacket);
+      INFO << "received " << bytes_received << " bytes." << ENDL;
+      if (bytes_received > 0) {
+        if (validateChecksum(ackpacket)) {
+          DEBUG << "Valid ACK for seqNum: " << ackpacket.ackNum << ENDL;
+
+          if (ackpacket.ackNum >= base) {
+            base = ackpacket.ackNum + 1;
+
+            if (base == nextseqnum) {
+              timer.stop();
+              if (allSent) {
+                allAcked = true;
+              }
+            } else {
+              timer.start();
+            }
+          }
+        } else {
+          WARNING << "ACK received with wrong checksum" << ENDL;
+        }
+      } else {
+        TRACE << "0 bytes received. Could be in a loss during transmission"
+              << ENDL;
+      }
 
       // Check to see if the timer has expired.
+      if (timer.timeout()) {
+        WARNING << "Timeout occured, retrying tranmission from base: " << base
+                << ENDL;
+
+        for (uint16_t i = base; i < nextseqnum; i++) {
+          client.udt_send(window[i % WINDOW_SIZE]);
+          DEBUG << "Retranmitted packet (seq#: " << i << ")" << ENDL;
+        }
+
+        timer.start();
+      }
     }
 
     // cleanup and close the file and network.
-
+    file.close();
   } catch (std::exception &e) {
     FATAL << "Error: " << e.what() << ENDL;
     exit(1);
