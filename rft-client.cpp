@@ -123,7 +123,9 @@ int main(int argc, char *argv[]) {
         if (base == nextseqnum) {
           timer.start();
         }
-        nextseqnum++;
+        if (!allSent) {
+          nextseqnum++;
+        }
       }
 
       // Call udt_recieve() to see if there is an acknowledgment.  If there is,
