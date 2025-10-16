@@ -87,8 +87,7 @@ int main(int argc, char *argv[]) {
     // ***************************************************************
     // * Initialize your timer, window and the unreliableTransport etc.
     // **************************************************************
-    timerC timer;
-    timer.setDuration(60);
+    timerC timer{100};
     unreliableTransportC client{hostname, portNum};
     std::array<datagramS, WINDOW_SIZE> window;
     uint16_t nextseqnum = 1;
@@ -100,7 +99,7 @@ int main(int argc, char *argv[]) {
     // **************************************************************
     bool allSent{false};
     bool allAcked{false};
-    while ((!allSent) && (!allAcked)) {
+    while (!allSent || !allAcked) {
       // Is there space in the window? If so, read some data from the file and
       // send it.
       if (nextseqnum < base + WINDOW_SIZE) {
@@ -108,30 +107,31 @@ int main(int argc, char *argv[]) {
         std::array<char, MAX_PAYLOAD_LENGTH> buffer;
         file.read(buffer.data(), buffer.size());
         std::streamsize bytes_read = file.gcount();
-
+        datagramS packet{
+            nextseqnum, 0, 0, static_cast<uint8_t>(bytes_read), {}};
         if (bytes_read > 0) {
-          datagramS packet{
-              nextseqnum, 0, 0, static_cast<uint8_t>(bytes_read), {}};
           std::copy(buffer.cbegin(), buffer.cbegin() + bytes_read, packet.data);
-          packet.checksum = computeChecksum(packet);
-          client.udt_send(packet);
 
-          window[nextseqnum % WINDOW_SIZE] = packet;
-
-          if (base == nextseqnum) {
-            timer.start();
-          }
-          nextseqnum++;
         } else {
+          INFO << "Sending end packet" << ENDL;
           allSent = true;
         }
+
+        packet.checksum = computeChecksum(packet);
+        client.udt_send(packet);
+        window[nextseqnum % WINDOW_SIZE] = packet;
+        if (base == nextseqnum) {
+          timer.start();
+        }
+        nextseqnum++;
       }
+
       // Call udt_recieve() to see if there is an acknowledgment.  If there is,
       // process it.
       datagramS ackpacket;
       const auto bytes_received = client.udt_receive(ackpacket);
-      INFO << "received " << bytes_received << " bytes." << ENDL;
       if (bytes_received > 0) {
+        INFO << "received " << bytes_received << " bytes." << ENDL;
         if (validateChecksum(ackpacket)) {
           DEBUG << "Valid ACK for seqNum: " << ackpacket.ackNum << ENDL;
 
@@ -151,7 +151,8 @@ int main(int argc, char *argv[]) {
           WARNING << "ACK received with wrong checksum" << ENDL;
         }
       } else {
-        TRACE << "0 bytes received. Could be in a loss during transmission"
+        TRACE << "0 bytes received. Potentially could be a loss during "
+                 "transmission"
               << ENDL;
       }
 
@@ -169,10 +170,13 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    INFO << "File transmission completed" << ENDL;
+
     // cleanup and close the file and network.
     file.close();
   } catch (std::exception &e) {
     FATAL << "Error: " << e.what() << ENDL;
+    file.close();
     exit(1);
   }
   return 0;
