@@ -102,29 +102,36 @@ int main(int argc, char *argv[]) {
     while (!allSent || !allAcked) {
       // Is there space in the window? If so, read some data from the file and
       // send it.
-      if (nextseqnum < base + WINDOW_SIZE) {
+      if (nextseqnum <
+          base + WINDOW_SIZE) { // checking that we haven't exceeded amount of
+                                // window packets
 
         std::array<char, MAX_PAYLOAD_LENGTH> buffer;
         file.read(buffer.data(), buffer.size());
         std::streamsize bytes_read = file.gcount();
         datagramS packet{
             nextseqnum, 0, 0, static_cast<uint8_t>(bytes_read), {}};
-        if (bytes_read > 0) {
+        if (bytes_read > 0) { // still data in the file
           std::copy(buffer.cbegin(), buffer.cbegin() + bytes_read, packet.data);
-
         } else {
           INFO << "Sending end packet" << ENDL;
           allSent = true;
         }
 
         packet.checksum = computeChecksum(packet);
-        client.udt_send(packet);
-        window[nextseqnum % WINDOW_SIZE] = packet;
-        if (base == nextseqnum) {
+        client.udt_send(
+            packet); // send packet to server, if zero payloadLength then it is
+                     // final packet which causes the server to shut down
+        if (base == nextseqnum) { // first packet in window, start timer because
+                                  // it is new window
           timer.start();
         }
-        if (!allSent) {
+        window[nextseqnum % WINDOW_SIZE] = packet; // add packet to window
+        if (!allSent) { // all packets being sent means that there is no next
+                        // sequence number.
           nextseqnum++;
+        } else {
+          nextseqnum = base;
         }
       }
 
@@ -132,21 +139,23 @@ int main(int argc, char *argv[]) {
       // process it.
       datagramS ackpacket;
       const auto bytes_received = client.udt_receive(ackpacket);
-      if (bytes_received > 0) {
+      if (bytes_received >
+          0) { // data has been received by client in response to packets sent
         INFO << "received " << bytes_received << " bytes." << ENDL;
-        if (validateChecksum(ackpacket)) {
+        if (validateChecksum(ackpacket)) { // not corrupted
           DEBUG << "Valid ACK for seqNum: " << ackpacket.ackNum << ENDL;
 
-          if (ackpacket.ackNum >= base) {
+          if (ackpacket.ackNum >= base) { // if ACK number in window
             base = ackpacket.ackNum + 1;
 
-            if (base == nextseqnum) {
+            if (base == nextseqnum) { // we transmitted all of window
               timer.stop();
-              if (allSent) {
+              if (allSent) { // we are done!
                 allAcked = true;
               }
             } else {
-              timer.start();
+              timer.start(); // restart timer because we have a new window to
+                             // deal with
             }
           }
         } else {
@@ -163,12 +172,13 @@ int main(int argc, char *argv[]) {
         WARNING << "Timeout occured, retrying tranmission from base: " << base
                 << ENDL;
 
-        for (uint16_t i = base; i < nextseqnum; i++) {
+        for (uint16_t i = base; i < nextseqnum;
+             i++) { // retry all packets in window
           client.udt_send(window[i % WINDOW_SIZE]);
           DEBUG << "Retranmitted packet (seq#: " << i << ")" << ENDL;
         }
 
-        timer.start();
+        timer.start(); // restart timer
       }
     }
 
